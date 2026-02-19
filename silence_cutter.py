@@ -65,6 +65,32 @@ def get_duration(input_file: str) -> float:
     return float(data["format"]["duration"])
 
 
+def get_bitrate(input_file: str) -> int | None:
+    """Get video bitrate from input file via ffprobe."""
+    try:
+        cmd = [
+            "ffprobe", "-v", "quiet", "-print_format", "json",
+            "-show_streams", input_file
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        data = json.loads(result.stdout)
+        for stream in data.get("streams", []):
+            if stream.get("codec_type") == "video":
+                br = stream.get("bit_rate")
+                if br:
+                    return int(br)
+        # Fallback: use format-level bitrate minus ~192k for audio
+        cmd2 = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", input_file]
+        result2 = subprocess.run(cmd2, capture_output=True, text=True)
+        data2 = json.loads(result2.stdout)
+        total_br = int(data2["format"].get("bit_rate", 0))
+        if total_br > 0:
+            return max(total_br - 192000, 500000)
+    except Exception:
+        pass
+    return None
+
+
 def has_nvenc() -> bool:
     """Check if NVIDIA NVENC is available."""
     try:
@@ -102,6 +128,10 @@ def cut_and_concat(input_file: str, output_file: str, segments: list[tuple[float
         print("No segments to keep — entire video is silent?")
         sys.exit(1)
 
+    source_bitrate = get_bitrate(input_file)
+    if source_bitrate:
+        print(f"  📐 Matching source bitrate: {source_bitrate // 1000} kbps")
+
     with tempfile.TemporaryDirectory() as tmpdir:
         segment_files = []
         total = len(segments)
@@ -113,9 +143,17 @@ def cut_and_concat(input_file: str, output_file: str, segments: list[tuple[float
 
             # Re-encode each segment for frame-accurate cuts (no keyframe drift)
             if use_gpu:
-                enc_args = ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "20", "-b:v", "0"]
+                enc_args = ["-c:v", "h264_nvenc", "-preset", "p4"]
+                if source_bitrate:
+                    enc_args += ["-b:v", str(source_bitrate), "-maxrate", str(int(source_bitrate * 1.5)), "-bufsize", str(source_bitrate * 2)]
+                else:
+                    enc_args += ["-cq", "20", "-b:v", "0"]
             else:
-                enc_args = ["-c:v", "libx264", "-preset", "fast", "-crf", "20"]
+                enc_args = ["-c:v", "libx264", "-preset", "fast"]
+                if source_bitrate:
+                    enc_args += ["-b:v", str(source_bitrate), "-maxrate", str(int(source_bitrate * 1.5)), "-bufsize", str(source_bitrate * 2)]
+                else:
+                    enc_args += ["-crf", "20"]
 
             cmd = [
                 "ffmpeg", "-y", "-ss", str(start), "-i", input_file,
