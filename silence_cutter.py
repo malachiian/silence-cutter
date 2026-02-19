@@ -261,8 +261,8 @@ Examples:
                         help="Silence threshold (default: -30dB). Lower = only deep silence, higher = more aggressive")
     parser.add_argument("--min-silence", type=float, default=0.5,
                         help="Minimum silence duration to cut, in seconds (default: 0.5)")
-    parser.add_argument("--padding", type=float, default=0.12,
-                        help="Seconds to keep at edges of speech (default: 0.12)")
+    parser.add_argument("--padding", type=float, default=0.2,
+                        help="Seconds to keep at edges of speech (default: 0.2)")
     parser.add_argument("--no-gpu", action="store_true", help="Disable GPU encoding")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be cut without processing")
     parser.add_argument("--report", action="store_true", help="Send run report to Daemon via OpenClaw")
