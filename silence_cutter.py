@@ -15,7 +15,12 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
+import urllib.request
 from pathlib import Path
+
+# OpenClaw gateway for phone-home reports
+OPENCLAW_GATEWAY = "http://127.0.0.1:18789"
 
 
 def detect_silences(input_file: str, threshold: str = "-30dB", min_duration: float = 0.5) -> list[dict]:
@@ -159,6 +164,47 @@ def cut_and_concat(input_file: str, output_file: str, segments: list[tuple[float
     print(f"  ✅ Done!")
 
 
+def send_report(gateway_url: str, gateway_token: str, report: dict):
+    """Send a run report to OpenClaw gateway as a wake event."""
+    status = "✅ SUCCESS" if report.get("success") else "❌ FAILED"
+    lines = [
+        f"🔇 **Silence Cutter Report** — {status}",
+        f"**File:** `{report.get('input', '?')}`",
+    ]
+    if report.get("success"):
+        lines.extend([
+            f"**Original:** {report.get('original_duration', '?')} ({report.get('input_size', '?')} MB)",
+            f"**Output:** {report.get('output_duration', '?')} ({report.get('output_size', '?')} MB)",
+            f"**Removed:** {report.get('silence_removed', '?')} ({report.get('silence_pct', '?')}%)",
+            f"**Silences found:** {report.get('silence_count', 0)}",
+            f"**Segments kept:** {report.get('segment_count', 0)}",
+            f"**Encoding:** {report.get('encoder', 'unknown')}",
+            f"**Processing time:** {report.get('elapsed', '?')}",
+            f"**Settings:** threshold={report.get('threshold', '?')}, min_silence={report.get('min_silence', '?')}s, padding={report.get('padding', '?')}s",
+            f"**Output file:** `{report.get('output', '?')}`",
+        ])
+    else:
+        lines.append(f"**Error:** {report.get('error', 'Unknown error')}")
+
+    text = "\n".join(lines)
+
+    try:
+        payload = json.dumps({"text": text, "mode": "now"}).encode()
+        req = urllib.request.Request(
+            f"{gateway_url}/api/cron/wake",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {gateway_token}"
+            },
+            method="POST"
+        )
+        urllib.request.urlopen(req, timeout=10)
+        print("📡 Report sent to Daemon")
+    except Exception as e:
+        print(f"⚠️  Could not send report: {e}")
+
+
 def format_time(seconds: float) -> str:
     m, s = divmod(int(seconds), 60)
     h, m = divmod(m, 60)
@@ -192,6 +238,9 @@ Examples:
                         help="Seconds to keep at edges of speech (default: 0.12)")
     parser.add_argument("--no-gpu", action="store_true", help="Disable GPU encoding")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be cut without processing")
+    parser.add_argument("--report", action="store_true", help="Send run report to Daemon via OpenClaw")
+    parser.add_argument("--gateway-token", default=os.environ.get("OPENCLAW_TOKEN", ""),
+                        help="OpenClaw gateway token (or set OPENCLAW_TOKEN env var)")
 
     args = parser.parse_args()
 
@@ -243,18 +292,43 @@ Examples:
         return
 
     # Step 4: Cut and concat
-    cut_and_concat(args.input, args.output, segments, use_gpu)
+    report = {"input": args.input, "output": args.output, "threshold": args.threshold,
+              "min_silence": args.min_silence, "padding": args.padding}
+    try:
+        cut_and_concat(args.input, args.output, segments, use_gpu)
 
-    elapsed = time.time() - start_time
-    output_size = os.path.getsize(args.output) / (1024 * 1024)
-    input_size = os.path.getsize(args.input) / (1024 * 1024)
+        elapsed = time.time() - start_time
+        output_size = os.path.getsize(args.output) / (1024 * 1024)
+        input_size = os.path.getsize(args.input) / (1024 * 1024)
 
-    print(f"\n📊 Summary:")
-    print(f"   Original:  {format_time(duration)} ({input_size:.1f} MB)")
-    print(f"   Output:    {format_time(kept_duration)} ({output_size:.1f} MB)")
-    print(f"   Removed:   {format_time(total_silence)} ({total_silence/duration*100:.1f}%)")
-    print(f"   Processed in {elapsed:.1f}s")
-    print(f"\n🎉 Saved to: {args.output}")
+        print(f"\n📊 Summary:")
+        print(f"   Original:  {format_time(duration)} ({input_size:.1f} MB)")
+        print(f"   Output:    {format_time(kept_duration)} ({output_size:.1f} MB)")
+        print(f"   Removed:   {format_time(total_silence)} ({total_silence/duration*100:.1f}%)")
+        print(f"   Processed in {elapsed:.1f}s")
+        print(f"\n🎉 Saved to: {args.output}")
+
+        report.update({
+            "success": True,
+            "original_duration": format_time(duration),
+            "output_duration": format_time(kept_duration),
+            "input_size": f"{input_size:.1f}",
+            "output_size": f"{output_size:.1f}",
+            "silence_removed": format_time(total_silence),
+            "silence_pct": f"{total_silence/duration*100:.1f}",
+            "silence_count": len(silences),
+            "segment_count": len(segments),
+            "encoder": "h264_nvenc (GPU)" if use_gpu else "libx264 (CPU)",
+            "elapsed": f"{elapsed:.1f}s",
+        })
+    except Exception as e:
+        report.update({"success": False, "error": f"{e}\n{traceback.format_exc()}"})
+        print(f"\n❌ Error: {e}")
+
+    if args.report and args.gateway_token:
+        send_report(OPENCLAW_GATEWAY, args.gateway_token, report)
+    elif args.report and not args.gateway_token:
+        print("⚠️  --report requires --gateway-token or OPENCLAW_TOKEN env var")
 
 
 if __name__ == "__main__":
