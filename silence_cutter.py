@@ -111,11 +111,17 @@ def cut_and_concat(input_file: str, output_file: str, segments: list[tuple[float
             seg_path = os.path.join(tmpdir, f"seg_{i:04d}.ts")
             duration = end - start
 
-            # Use stream copy for cutting (fast, no re-encode per segment)
+            # Re-encode each segment for frame-accurate cuts (no keyframe drift)
+            if use_gpu:
+                enc_args = ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "20", "-b:v", "0"]
+            else:
+                enc_args = ["-c:v", "libx264", "-preset", "fast", "-crf", "20"]
+
             cmd = [
                 "ffmpeg", "-y", "-ss", str(start), "-i", input_file,
                 "-t", str(duration),
-                "-c", "copy",
+                *enc_args,
+                "-c:a", "aac", "-b:a", "192k",
                 "-avoid_negative_ts", "make_zero",
                 seg_path
             ]
@@ -131,31 +137,14 @@ def cut_and_concat(input_file: str, output_file: str, segments: list[tuple[float
             for seg in segment_files:
                 f.write(f"file '{seg}'\n")
 
-        print(f"\n\n🔗 Concatenating and encoding...")
+        print(f"\n\n🔗 Concatenating...")
+        print(f"  🚀 {'NVIDIA GPU' if use_gpu else 'CPU'} encoding")
 
-        # Concat + re-encode for clean output
-        if use_gpu:
-            encode_args = [
-                "-c:v", "h264_nvenc",
-                "-preset", "p4",        # balanced speed/quality
-                "-cq", "20",            # constant quality (lower = better, 18-23 is great)
-                "-b:v", "0",
-                "-c:a", "aac", "-b:a", "192k"
-            ]
-            print("  🚀 Using NVIDIA GPU encoding (h264_nvenc)")
-        else:
-            encode_args = [
-                "-c:v", "libx264",
-                "-preset", "fast",
-                "-crf", "20",
-                "-c:a", "aac", "-b:a", "192k"
-            ]
-            print("  🖥️  Using CPU encoding (libx264)")
-
+        # Segments are already encoded — just concat with stream copy
         cmd = [
             "ffmpeg", "-y",
             "-f", "concat", "-safe", "0", "-i", concat_path,
-            *encode_args,
+            "-c", "copy",
             "-movflags", "+faststart",
             output_file
         ]
