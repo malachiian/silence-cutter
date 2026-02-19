@@ -325,10 +325,11 @@ Examples:
         report.update({"success": False, "error": f"{e}\n{traceback.format_exc()}"})
         print(f"\n❌ Error: {e}")
 
-    if args.report and args.gateway_token:
-        send_report(OPENCLAW_GATEWAY, args.gateway_token, report)
-    elif args.report and not args.gateway_token:
-        print("⚠️  --report requires --gateway-token or OPENCLAW_TOKEN env var")
+    if args.report:
+        report_path = Path(args.output).with_suffix(".report.json")
+        with open(report_path, "w") as f:
+            json.dump(report, f, indent=2)
+        print(f"📋 Report saved to: {report_path}")
 
 
 if __name__ == "__main__":
